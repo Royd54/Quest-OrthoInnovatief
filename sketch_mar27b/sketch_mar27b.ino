@@ -94,12 +94,12 @@ void loop() {
   // drawWheelchair();
   // Sensor 1: frame
   mpu.update();
-  float roll1 = mpu.getAngleY();
+  float roll1 = -mpu.getAngleY();
 
   // Sensor 2: zitvlak (sensor zit op de kop)
   tcaSelect(0);
   mpu1.update();
-  float roll2 = -mpu1.getAngleY();  // Omdraaien
+  float roll2 = mpu1.getAngleY();
 
   // Sensor 3: rug (sensor zit op de kop)
   tcaSelect(1);
