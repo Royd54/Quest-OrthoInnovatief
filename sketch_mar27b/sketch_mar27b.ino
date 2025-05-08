@@ -2,6 +2,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <MPU6050_tockn.h>
+#include <SPI.h>
 
 // Definieer het I2C-adres voor de MPU6050 (0x69 omdat AD0 is verbonden met VCC)
 #define MPU6050_ADDR 0x69
@@ -30,6 +31,8 @@ bool yellowBuzzerActivated = false;
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
+SPIClass SPI1(HSPI);
+
 // Eerste sensor op Wire (standaard adres 0x68)
 MPU6050 mpu(Wire);        
 // Tweede sensor op Wire1 (adres 0x69)
@@ -42,7 +45,10 @@ bool isStable = false;
 int timerValue = 0;
 
 const int threshold = 5;
-const unsigned long alertTime = 70000;
+const unsigned long alertTime = 90000;
+
+unsigned long lastCheckTime = 0;
+const unsigned long checkInterval = 5000; // 5 seconden in milliseconden
 
 #define TCAADDR 0x70  // Adres van de TCA9548A multiplexer
 
@@ -88,18 +94,44 @@ void setup() {
     tft.setTextColor(ILI9341_WHITE);
     tft.setTextSize(2);
     tft.println("Prototype v0.7");
+
+//     SPI1.begin(5, 15, 16, 45);  // SCK, MISO, MOSI, SS
+//       // Configureer CS handmatig als output (wordt niet gebruikt in deze test)
+//   pinMode(45, OUTPUT);
+//   digitalWrite(45, LOW);
+
+//   // SPI-configuratie
+//   SPI1.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+
+//   byte testByte = 0xA5;  // willekeurige testwaarde
+//   Serial.print("Zend byte over SPI1: 0x");
+//   Serial.println(testByte, HEX);
+
+//   byte response = SPI1.transfer(testByte);
+
+//   Serial.print("Ontvangen byte via SPI1: 0x");
+//   Serial.println(response, HEX);
+
+//   SPI1.endTransaction();
+
+//   // Resultaat evalueren
+//   if (response == testByte) {
+//     Serial.println("✅ SPI loopback OK!");
+//   } else {
+//     Serial.println("❌ SPI werkt NIET of geen loopback aangesloten.");
+//   }
 }
 
 void loop() {
   // drawWheelchair();
   // Sensor 1: frame
   mpu.update();
-  float roll1 = -mpu.getAngleY();
+  float roll1 = -mpu.getAngleY() + 9; //+9 offset
 
   // Sensor 2: zitvlak (sensor zit op de kop)
   tcaSelect(0);
   mpu1.update();
-  float roll2 = mpu1.getAngleY();
+  float roll2 = mpu1.getAngleY() + 3; //+3 offset
 
   // Sensor 3: rug (sensor zit op de kop)
   tcaSelect(1);
@@ -108,7 +140,7 @@ void loop() {
 
   // Berekeningen
   float zithoek = roll2 - roll1 + 90;
-  float rughoek = roll3 + zithoek;
+  float rughoek = roll3 - zithoek;
 
   // Wis het schermgedeelte voor de nieuwe data
   tft.fillRect(140, 35, 80, 30, ILI9341_BLACK);
@@ -136,33 +168,54 @@ void loop() {
   tft.print("Rug:   ");
   tft.println((int)rughoek);
 
-  checkStableAngle(zithoek);
+  checkStableAngle(zithoek, rughoek);
+
   drawWheelchair();
   delay(200); // Wacht 200ms voor de volgende update
 }
 
-void checkStableAngle(float pitch1) {
-    static float lastPitch = pitch1;
-    if (abs(pitch1 - lastPitch) <= threshold) {
-        if (!isStable) {
-            stableStartTime = millis();
-            isStable = true;
+void checkStableAngle(float pitch1, float pitch2) {
+    static float lastPitch1 = pitch1;
+    static float lastPitch2 = pitch2;
+    static unsigned long lastCompareTime = 0;
+    static const unsigned long compareInterval = 5000; // elke 5 seconden
+    static unsigned long stableStartTime = 0;
+    static bool isStable = false;
+
+    // Check alleen elke 5 seconden of de hoeken veranderd zijn
+    if (millis() - lastCompareTime >= compareInterval) {
+        lastCompareTime = millis();
+
+        if (abs(pitch1 - lastPitch1) <= threshold && abs(pitch2 - lastPitch2) <= threshold) {
+            if (!isStable) {
+                stableStartTime = millis();
+                isStable = true;
+            }
+        } else {
+            isStable = false;
+            stableStartTime = millis(); // reset starttijd
         }
+
+        lastPitch1 = pitch1;
+        lastPitch2 = pitch2;
+    }
+
+    // Timer telt gewoon door als het stabiel is
+    if (isStable) {
         timerValue = (millis() - stableStartTime) / 1000;
         drawRectangle(timerValue);
         drawTimer(timerValue);
         if (millis() - stableStartTime >= alertTime) {
-            // tone(buzzer, 1000, 500);
+            tone(buzzer, 1000, 500);
         }
     } else {
-        isStable = false;
         timerValue = 0;
         drawRectangle(timerValue);
         drawTimer(timerValue);
         noTone(buzzer);
     }
-    lastPitch = pitch1;
 }
+
 
 void drawTimer(int seconds) {
     tft.setCursor(20, 200);
@@ -187,12 +240,12 @@ void drawTimer(int seconds) {
 void drawRectangle(int seconds) {
     uint16_t color;
 
-    if (seconds < 60) {
+    if (seconds < ((alertTime/1000)/2)) {
         color = ILI9341_GREEN;
         digitalWrite(greenLED, HIGH);
         digitalWrite(yellowLED, LOW);
         digitalWrite(redLED, LOW);
-    } else if (seconds < 70) {
+    } else if (seconds < (alertTime/1000)) {
         color = ILI9341_ORANGE;
         digitalWrite(greenLED, LOW);
         digitalWrite(yellowLED, HIGH);
