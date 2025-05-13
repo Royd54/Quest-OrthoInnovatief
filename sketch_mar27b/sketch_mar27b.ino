@@ -3,6 +3,11 @@
 #include <Adafruit_ILI9341.h>
 #include <MPU6050_tockn.h>
 #include <SPI.h>
+#include <RTClib.h>
+#include <SD.h>
+
+RTC_DS3231 rtc;
+const int SD_CS = 39;
 
 // Definieer het I2C-adres voor de MPU6050 (0x69 omdat AD0 is verbonden met VCC)
 #define MPU6050_ADDR 0x69
@@ -19,15 +24,12 @@
 #define TFT_DC    8
 #define TFT_RST   9  
 
-const int buttonPin = 13;  // Pin waar de knop op is aangesloten
 const int greenLED = 14;   // Groene LED
 const int yellowLED = 21;  // Gele LED
 const int redLED = 47;     // Rode LED
 const int buzzer = 48;     // Buzzer
 
-bool buttonState = false;
-unsigned long buttonPressTime = 0;
-bool yellowBuzzerActivated = false;
+char dangerState = 0;
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
@@ -50,6 +52,9 @@ const unsigned long alertTime = 90000;
 unsigned long lastCheckTime = 0;
 const unsigned long checkInterval = 5000; // 5 seconden in milliseconden
 
+unsigned long lastSDcardCheckTime = 0;
+const unsigned long SDcardcheckInterval = 60000;  // 60 seconden = 60.000 milliseconden
+
 #define TCAADDR 0x70  // Adres van de TCA9548A multiplexer
 
 void tcaSelect(uint8_t i) {
@@ -59,71 +64,84 @@ void tcaSelect(uint8_t i) {
   Wire1.endTransmission();
 }
 
+void SDsetup(){
+  if (!SD.begin(SD_CS, SPI1)) {
+    Serial.println("SD-kaart fout");
+    tft.println("SD FOUT");
+    return;
+  } else {
+    delay(100);
+    Serial.println("SD-kaart OK");
+    File file = SD.open("/DATA.csv");
+
+  if (!file) {
+    Serial.println("Kan CSV niet openen.");
+    Serial.println("");
+    Serial.println("");
+    Serial.println("");
+    Serial.println("");
+    SDsetup();
+    return;
+  }
+    Serial.println("CSV-bestand geopend!");
+  }
+}
+
+
 void setup() {
-    Serial.begin(115200);
+  Serial.begin(115200);
+  // delay(1000);
 
-    // Eerste I2C bus (Wire) voor de eerste sensor
-    Wire.begin(6, 7); // SDA = GPIO6, SCL = GPIO7
+  SPI1.begin(5, 15, 16, -1);  // SCK, MISO, MOSI, SS was 45
+  if (!SD.begin(SD_CS, SPI1)) {
+    Serial.println("SD-kaart niet gevonden!");
+  }
+  else Serial.println("SD-kaart gevonden");
 
-    // Tweede I2C bus (Wire1) voor de tweede sensor
-    Wire1.begin(18, 17); // SDA = GPIO18, SCL = GPIO17
+  // Eerste I2C bus (Wire) voor de eerste sensor
+  Wire.begin(6, 7); // SDA = GPIO6, SCL = GPIO7
 
-    pinMode(buttonPin, OUTPUT); // Interne pull-up weerstand gebruiken
-    pinMode(greenLED, OUTPUT);
-    pinMode(yellowLED, OUTPUT);
-    pinMode(redLED, OUTPUT);
-    pinMode(buzzer, OUTPUT);
+  // Tweede I2C bus (Wire1) voor de tweede sensor
+  Wire1.begin(18, 17); // SDA = GPIO18, SCL = GPIO17
 
-    // Initialiseer de MPU6050 sensoren zonder het adres expliciet op te geven
-    mpu.begin();  // Eerste sensor
-    mpu.calcGyroOffsets();
-    tcaSelect(0);
-    mpu1.begin(); // Tweede sensor
-    mpu1.calcGyroOffsets();
-    tcaSelect(1);
-    mpu2.begin(); // Derde sensor
-    mpu2.calcGyroOffsets();
+  tcaSelect(2);
 
-    // Initialiseer het scherm
-    tft.begin();
-    tft.setRotation(2);
-    tft.fillScreen(ILI9341_BLACK);
+  if (!rtc.begin()) {
+    Serial.println("RTC niet gevonden!");
+  }
+  else if(rtc.begin()){Serial.println("RTC gevonden");}
 
-    // Titel tonen op het scherm
-    tft.setCursor(10, 10);
-    tft.setTextColor(ILI9341_WHITE);
-    tft.setTextSize(2);
-    tft.println("Prototype v0.7");
+  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
-//     SPI1.begin(5, 15, 16, 45);  // SCK, MISO, MOSI, SS
-//       // Configureer CS handmatig als output (wordt niet gebruikt in deze test)
-//   pinMode(45, OUTPUT);
-//   digitalWrite(45, LOW);
+  pinMode(greenLED, OUTPUT);
+  pinMode(yellowLED, OUTPUT);
+  pinMode(redLED, OUTPUT);
+  pinMode(buzzer, OUTPUT);
 
-//   // SPI-configuratie
-//   SPI1.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  // Initialiseer de MPU6050 sensoren zonder het adres expliciet op te geven
+  tcaSelect(0);
+  mpu.begin();  // Eerste sensor
+  mpu.calcGyroOffsets();
+  mpu1.begin(); // Tweede sensor
+  mpu1.calcGyroOffsets();
+  tcaSelect(1);
+  mpu2.begin(); // Derde sensor
+  mpu2.calcGyroOffsets();
 
-//   byte testByte = 0xA5;  // willekeurige testwaarde
-//   Serial.print("Zend byte over SPI1: 0x");
-//   Serial.println(testByte, HEX);
+  // Initialiseer het scherm
+  tft.begin();
+  tft.setRotation(2);
+  tft.fillScreen(ILI9341_BLACK);
 
-//   byte response = SPI1.transfer(testByte);
-
-//   Serial.print("Ontvangen byte via SPI1: 0x");
-//   Serial.println(response, HEX);
-
-//   SPI1.endTransaction();
-
-//   // Resultaat evalueren
-//   if (response == testByte) {
-//     Serial.println("✅ SPI loopback OK!");
-//   } else {
-//     Serial.println("❌ SPI werkt NIET of geen loopback aangesloten.");
-//   }
+  // Titel tonen op het scherm
+  tft.setCursor(10, 10);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
+  // tft.println("Prototype v0.7");
+  delay(1000);
 }
 
 void loop() {
-  // drawWheelchair();
   // Sensor 1: frame
   mpu.update();
   float roll1 = -mpu.getAngleY() + 9; //+9 offset
@@ -143,7 +161,7 @@ void loop() {
   float rughoek = roll3 - zithoek;
 
   // Wis het schermgedeelte voor de nieuwe data
-  tft.fillRect(140, 35, 80, 30, ILI9341_BLACK);
+  // tft.fillRect(140, 35, 80, 30, ILI9341_BLACK);
   tft.fillRect(140, 75, 80, 30, ILI9341_BLACK);
   tft.fillRect(140, 115, 80, 30, ILI9341_BLACK);
 
@@ -151,8 +169,8 @@ void loop() {
   tft.setCursor(20, 40);
   tft.setTextColor(ILI9341_WHITE);
   tft.setTextSize(3);
-  tft.print("Frame: ");
-  tft.println((int)roll1);
+  // tft.print("Frame: ");
+  // tft.println((int)roll1);
 
   // Toon pitch van de tweede sensor op het scherm
   tft.setCursor(20, 80);
@@ -171,7 +189,143 @@ void loop() {
   checkStableAngle(zithoek, rughoek);
 
   drawWheelchair();
+
+    if (millis() - lastSDcardCheckTime >= SDcardcheckInterval) {
+    lastSDcardCheckTime = millis();
+    SDKaartLezen();
+    logDataToSDCard(zithoek, rughoek, dangerState);
+  }
+
   delay(200); // Wacht 200ms voor de volgende update
+}
+
+void logDataToSDCard(float zit, float rug, int dangerStatus) {
+  DateTime now = rtc.now();
+  // Bestand openen in "append"-modus
+  File file = SD.open("/dataopslag.csv", FILE_APPEND);
+  if (file.size() == 0) {
+  file.println("Tijd;Zithoek;Rughoek;LEDkleur");
+}
+  if (file) {
+    // Formatteer tijd als "YYYY-MM-DD HH:MM:SS"
+    char tijdBuffer[20];
+    sprintf(tijdBuffer, "%04d-%02d-%02d %02d:%02d:%02d",
+            now.year(), now.month(), now.day(),
+            now.hour(), now.minute(), now.second());
+
+    // Schrijf de regel in CSV-formaat
+    file.print(tijdBuffer);
+    file.print(";");
+    file.print(zit, 2);
+    file.print(";");
+    file.print(rug, 2);
+    file.print(";");
+    file.print(dangerStatus);
+    file.println();
+
+    file.close();
+    Serial.println("Data gelogd naar SD-kaart.");
+  } else {
+    Serial.println("Kan DATA.csv niet openen om te schrijven.");
+  }
+}
+
+void SDKaartLezen (){
+  tcaSelect(2);
+  DateTime now = rtc.now();
+  float ingesteldeTijd = now.hour() + now.minute() / 60.0;
+
+  SD.begin(SD_CS);
+  File file = SD.open("/DATA.csv");
+
+  if (!file) {
+    Serial.println("Kan CSV niet openen.");
+    Serial.println("");
+    Serial.println("");
+    Serial.println("");
+    Serial.println("");
+    SDsetup();
+    return;
+  }
+
+  Serial.println("CSV-bestand geopend!");
+
+  // Sla header over
+  file.readStringUntil('\n');
+
+  float vorigeTijd = -1;
+  int zithoekMin = -1, zithoekMax = -1;
+  int rughoekMin = -1, rughoekMax = -1;
+
+  while (file.available()) {
+    String regel = file.readStringUntil('\n');
+    regel.trim();
+
+    if (regel.length() == 0) continue;
+
+    // Verwerk CSV-regel
+    regel.replace('\t', ';');
+    regel.replace(',', '.');
+    regel.replace(" ", "");
+
+    int i1 = regel.indexOf(';');
+    int i2 = regel.indexOf(';', i1 + 1);
+    if (i1 == -1 || i2 == -1) continue;
+
+    float tijd = regel.substring(0, i1).toFloat();
+    String zithoekStr = regel.substring(i1 + 1, i2);
+    String rughoekStr = regel.substring(i2 + 1);
+
+    if (tijd > ingesteldeTijd) break;
+
+    // Parse zithoek
+    int slash1 = zithoekStr.indexOf('/');
+    if (slash1 > 0) {
+      zithoekMin = zithoekStr.substring(0, slash1).toInt();
+      zithoekMax = zithoekStr.substring(slash1 + 1).toInt();
+    }
+
+    // Parse rughoek
+    int slash2 = rughoekStr.indexOf('/');
+    if (slash2 > 0) {
+      rughoekMin = rughoekStr.substring(0, slash2).toInt();
+      rughoekMax = rughoekStr.substring(slash2 + 1).toInt();
+    }
+
+    vorigeTijd = tijd;
+  }
+
+  file.close();
+
+    char combinedString[6];  // Buffer voor "MM:SS"
+    tft.setCursor(20, 10);
+    tft.setTextColor(ILI9341_WHITE);
+    // tft.println(now.hour() + now.minute());
+    sprintf(combinedString, "%d:%d", now.hour(), now.minute());
+    tft.println(combinedString);
+
+  if (vorigeTijd != -1) {
+    // Serial.print("Tijd: ");
+    // Serial.println(vorigeTijd);
+
+    tft.setTextSize(2);
+    // Serial.print("Zithoek min/max: ");
+    // Serial.print(zithoekMin); Serial.print("/"); Serial.println(zithoekMax);
+    tft.setCursor(20, 40);
+    tft.setTextColor(ILI9341_WHITE);
+
+    sprintf(combinedString, "%d/%d", zithoekMin, zithoekMax);
+    tft.println(combinedString);
+
+    // Serial.print("Rughoek min/max: ");
+    // Serial.print(rughoekMin); Serial.print("/"); Serial.println(rughoekMax);
+    tft.setCursor(100, 40);
+    tft.setTextColor(ILI9341_WHITE);
+    sprintf(combinedString, "%d/%d", rughoekMin, rughoekMax);
+    tft.println(combinedString);
+  } else {
+    Serial.println("Geen instellingen gevonden voor deze tijd.");
+  }
 }
 
 void checkStableAngle(float pitch1, float pitch2) {
@@ -206,7 +360,7 @@ void checkStableAngle(float pitch1, float pitch2) {
         drawRectangle(timerValue);
         drawTimer(timerValue);
         if (millis() - stableStartTime >= alertTime) {
-            tone(buzzer, 1000, 500);
+           // tone(buzzer, 1000, 500);
         }
     } else {
         timerValue = 0;
@@ -215,7 +369,6 @@ void checkStableAngle(float pitch1, float pitch2) {
         noTone(buzzer);
     }
 }
-
 
 void drawTimer(int seconds) {
     tft.setCursor(20, 200);
@@ -245,16 +398,19 @@ void drawRectangle(int seconds) {
         digitalWrite(greenLED, HIGH);
         digitalWrite(yellowLED, LOW);
         digitalWrite(redLED, LOW);
+        dangerState = 0;
     } else if (seconds < (alertTime/1000)) {
         color = ILI9341_ORANGE;
         digitalWrite(greenLED, LOW);
         digitalWrite(yellowLED, HIGH);
         digitalWrite(redLED, LOW);
+        dangerState = 1;
     } else {
         color = ILI9341_RED;
         digitalWrite(greenLED, LOW);
         digitalWrite(yellowLED, LOW);
         digitalWrite(redLED, HIGH);
+        dangerState = 2;
     }
     if(color != prevcolor){
         tft.fillRect(10, 170, 220, 140, color);
