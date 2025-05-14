@@ -9,6 +9,9 @@
 RTC_DS3231 rtc;
 const int SD_CS = 39;
 
+    uint16_t prevcolor = 1;
+        uint16_t color;
+
 // Definieer het I2C-adres voor de MPU6050 (0x69 omdat AD0 is verbonden met VCC)
 #define MPU6050_ADDR 0x69
 // Definieer de registeradressen van de MPU6050
@@ -54,6 +57,9 @@ const unsigned long checkInterval = 5000; // 5 seconden in milliseconden
 
 unsigned long lastSDcardCheckTime = 0;
 const unsigned long SDcardcheckInterval = 60000;  // 60 seconden = 60.000 milliseconden
+
+int zithoekMin = -1, zithoekMax = -1;
+int rughoekMin = -1, rughoekMax = -1;
 
 #define TCAADDR 0x70  // Adres van de TCA9548A multiplexer
 
@@ -103,15 +109,16 @@ void setup() {
 
   // Tweede I2C bus (Wire1) voor de tweede sensor
   Wire1.begin(18, 17); // SDA = GPIO18, SCL = GPIO17
+  // delay(100);
+  tcaSelect(6);
 
-  tcaSelect(2);
-
-  if (!rtc.begin()) {
+  if (!rtc.begin(&Wire1)) {
     Serial.println("RTC niet gevonden!");
   }
-  else if(rtc.begin()){Serial.println("RTC gevonden");}
-
-  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  else{
+    Serial.println("RTC gevonden");
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
 
   pinMode(greenLED, OUTPUT);
   pinMode(yellowLED, OUTPUT);
@@ -162,49 +169,62 @@ void loop() {
 
   // Wis het schermgedeelte voor de nieuwe data
   // tft.fillRect(140, 35, 80, 30, ILI9341_BLACK);
-  tft.fillRect(140, 75, 80, 30, ILI9341_BLACK);
-  tft.fillRect(140, 115, 80, 30, ILI9341_BLACK);
+  tft.fillRect(90, 155, 133, 30, color);
+  tft.fillRect(90, 195, 133, 30, color);
 
   // Toon pitch van de eerste sensor op het scherm
-  tft.setCursor(20, 40);
+  tft.setCursor(20, 10);
   tft.setTextColor(ILI9341_WHITE);
-  tft.setTextSize(3);
+  tft.setTextSize(2);
+  tft.print("Verwachte hoeken");
+
   // tft.print("Frame: ");
   // tft.println((int)roll1);
 
+  tft.setCursor(30, 130);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
+  tft.print("Actuele hoeken");
+
   // Toon pitch van de tweede sensor op het scherm
-  tft.setCursor(20, 80);
+  tft.setCursor(20, 200);
   tft.setTextColor(ILI9341_WHITE);
   tft.setTextSize(3);
-  tft.print("Zit:   ");
+  tft.print("Zit: ");
   tft.println((int)zithoek);
 
   // Toon pitch van de derde sensor op het scherm
-  tft.setCursor(20, 120);
+  tft.setCursor(20, 160);
   tft.setTextColor(ILI9341_WHITE);
   tft.setTextSize(3);
-  tft.print("Rug:   ");
+  tft.print("Rug: ");
   tft.println((int)rughoek);
-
+  
   checkStableAngle(zithoek, rughoek);
 
-  drawWheelchair();
+  // drawWheelchair();
 
-    if (millis() - lastSDcardCheckTime >= SDcardcheckInterval) {
+  if (millis() - lastSDcardCheckTime >= SDcardcheckInterval) {
     lastSDcardCheckTime = millis();
+    // Wis het schermgedeelte voor de nieuwe data
+    // tft.fillRect(140, 35, 80, 30, ILI9341_BLACK);
+    tft.fillRect(90, 35, 133, 30, color);
+    tft.fillRect(90, 75, 133, 30, color);
+    tft.fillRect(70, 255, 133, 30, color);
     SDKaartLezen();
-    logDataToSDCard(zithoek, rughoek, dangerState);
+    logDataToSDCard(zithoek, rughoek, roll1, dangerState);
+    drawTime();
   }
 
   delay(200); // Wacht 200ms voor de volgende update
 }
 
-void logDataToSDCard(float zit, float rug, int dangerStatus) {
+void logDataToSDCard(float zit, float rug, float frameHoek,int dangerStatus) {
   DateTime now = rtc.now();
   // Bestand openen in "append"-modus
   File file = SD.open("/dataopslag.csv", FILE_APPEND);
   if (file.size() == 0) {
-  file.println("Tijd;Zithoek;Rughoek;LEDkleur");
+  file.println("Tijd;Zithoek;ZithoekMin;ZithoekMax;Rughoek;RughoekMin;RughoekMax;FrameHoek;LEDkleur");
 }
   if (file) {
     // Formatteer tijd als "YYYY-MM-DD HH:MM:SS"
@@ -218,9 +238,20 @@ void logDataToSDCard(float zit, float rug, int dangerStatus) {
     file.print(";");
     file.print(zit, 2);
     file.print(";");
+    file.print(zithoekMin);
+    file.print(";");
+    file.print(zithoekMax);
+    file.print(";");
     file.print(rug, 2);
     file.print(";");
+    file.print(rughoekMin);
+    file.print(";");
+    file.print(rughoekMax);
+    file.print(";");
+    file.print(frameHoek, 2);
+    file.print(";");
     file.print(dangerStatus);
+    file.print(";");
     file.println();
 
     file.close();
@@ -231,7 +262,7 @@ void logDataToSDCard(float zit, float rug, int dangerStatus) {
 }
 
 void SDKaartLezen (){
-  tcaSelect(2);
+  tcaSelect(6);
   DateTime now = rtc.now();
   float ingesteldeTijd = now.hour() + now.minute() / 60.0;
 
@@ -254,8 +285,10 @@ void SDKaartLezen (){
   file.readStringUntil('\n');
 
   float vorigeTijd = -1;
-  int zithoekMin = -1, zithoekMax = -1;
-  int rughoekMin = -1, rughoekMax = -1;
+  zithoekMin = -1;
+  zithoekMax = -1;
+  rughoekMin = -1;
+  rughoekMax = -1;
 
   while (file.available()) {
     String regel = file.readStringUntil('\n');
@@ -298,31 +331,35 @@ void SDKaartLezen (){
   file.close();
 
     char combinedString[6];  // Buffer voor "MM:SS"
-    tft.setCursor(20, 10);
-    tft.setTextColor(ILI9341_WHITE);
-    // tft.println(now.hour() + now.minute());
-    sprintf(combinedString, "%d:%d", now.hour(), now.minute());
-    tft.println(combinedString);
+    // tft.setCursor(100, 10);
+    // tft.setTextColor(ILI9341_WHITE);
+    // // tft.println(now.hour() + now.minute());
+    // tft.setTextSize(2);
+    // sprintf(combinedString, "%d:%d", now.hour(), now.minute());
+    // tft.println(combinedString);
+    // drawClock(now.hour(), now.minute());
 
   if (vorigeTijd != -1) {
     // Serial.print("Tijd: ");
     // Serial.println(vorigeTijd);
 
-    tft.setTextSize(2);
     // Serial.print("Zithoek min/max: ");
     // Serial.print(zithoekMin); Serial.print("/"); Serial.println(zithoekMax);
+    tft.setTextSize(3);
     tft.setCursor(20, 40);
     tft.setTextColor(ILI9341_WHITE);
-
+    tft.print("Zit:");
     sprintf(combinedString, "%d/%d", zithoekMin, zithoekMax);
     tft.println(combinedString);
 
     // Serial.print("Rughoek min/max: ");
     // Serial.print(rughoekMin); Serial.print("/"); Serial.println(rughoekMax);
-    tft.setCursor(100, 40);
+    tft.setCursor(20, 80);
     tft.setTextColor(ILI9341_WHITE);
+    tft.print("Rug:");
     sprintf(combinedString, "%d/%d", rughoekMin, rughoekMax);
     tft.println(combinedString);
+    tft.setTextSize(2);
   } else {
     Serial.println("Geen instellingen gevonden voor deze tijd.");
   }
@@ -358,27 +395,46 @@ void checkStableAngle(float pitch1, float pitch2) {
     if (isStable) {
         timerValue = (millis() - stableStartTime) / 1000;
         drawRectangle(timerValue);
-        drawTimer(timerValue);
+        // drawTimer(timerValue);
         if (millis() - stableStartTime >= alertTime) {
            // tone(buzzer, 1000, 500);
         }
     } else {
         timerValue = 0;
         drawRectangle(timerValue);
-        drawTimer(timerValue);
+        // drawTimer(timerValue);
         noTone(buzzer);
     }
 }
 
-void drawTimer(int seconds) {
+// void drawTimer(int seconds) {
+//     tft.setCursor(20, 200);
+//     tft.setTextColor(ILI9341_WHITE);
+//     tft.setTextSize(3);
+//     int minutes = seconds / 60;
+//     int remainingSeconds = seconds % 60;
+
+//     char timeString[6];  // Buffer voor "MM:SS"
+//     sprintf(timeString, "%02d:%02d", minutes, remainingSeconds);
+
+//     int screenWidth = 240;  // Breedte van het scherm
+//     int textWidth = strlen(timeString) * 18; // 6 pixels per char * text size (2)
+//     int xCentered = (screenWidth - textWidth) / 2;
+
+//     tft.setCursor(xCentered, 260);
+//     tft.setTextColor(ILI9341_WHITE);
+//     tft.println(timeString);
+// }
+
+void drawTime(){
+    tcaSelect(6);
+    DateTime now = rtc.now();
     tft.setCursor(20, 200);
     tft.setTextColor(ILI9341_WHITE);
     tft.setTextSize(3);
-    int minutes = seconds / 60;
-    int remainingSeconds = seconds % 60;
 
     char timeString[6];  // Buffer voor "MM:SS"
-    sprintf(timeString, "%02d:%02d", minutes, remainingSeconds);
+    sprintf(timeString, "%d:%d", now.hour(), now.minute());
 
     int screenWidth = 240;  // Breedte van het scherm
     int textWidth = strlen(timeString) * 18; // 6 pixels per char * text size (2)
@@ -387,14 +443,16 @@ void drawTimer(int seconds) {
     tft.setCursor(xCentered, 260);
     tft.setTextColor(ILI9341_WHITE);
     tft.println(timeString);
+    // drawClock(now.hour(), now.minute());
 }
 
-    uint16_t prevcolor;
-void drawRectangle(int seconds) {
-    uint16_t color;
+uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
+  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
 
+void drawRectangle(int seconds) {
     if (seconds < ((alertTime/1000)/2)) {
-        color = ILI9341_GREEN;
+        color = color565(39, 140, 21);
         digitalWrite(greenLED, HIGH);
         digitalWrite(yellowLED, LOW);
         digitalWrite(redLED, LOW);
@@ -413,11 +471,28 @@ void drawRectangle(int seconds) {
         dangerState = 2;
     }
     if(color != prevcolor){
-        tft.fillRect(10, 170, 220, 140, color);
+      // tft.fillRect(10, 170, 220, 140, color);
+      tft.fillScreen(color);
+      prevcolor = color;
+      int thickness = 3;  // Dikte van de rand
+
+      for (int i = 0; i < thickness; i++) {
+        tft.drawRoundRect(10 + i, 2 + i, 220 - 2 * i, 115 - 2 * i, 10, ILI9341_WHITE);
+      }
+      tft.fillRoundRect(14, 6, 212, 20, 10, ILI9341_BLACK);
+
+      for (int i = 0; i < thickness; i++) {
+        tft.drawRoundRect(10 + i, 123 + i, 220 - 2 * i, 120 - 2 * i, 10, ILI9341_WHITE);
+      }
+      tft.fillRoundRect(14, 126, 212, 20, 10, ILI9341_BLACK);
+
+      SDKaartLezen();
+      tft.fillRect(70, 255, 133, 30, color);
+      drawTime();
     }else{
-        tft.fillRect(40, 255, 140, 30, color);
+      // tft.fillScreen(prevcolor);
+        // tft.fillRect(40, 255, 140, 30, color);
     }
-    prevcolor = color;
 }
 
 void drawWheelchair() {
@@ -447,4 +522,44 @@ void drawWheelchair() {
 
     // Handvat
     tft.drawLine(xOffset - 50 * scale, yOffset - 70 * scale, xOffset - 70 * scale, yOffset - 80 * scale, ILI9341_WHITE);
+}
+
+void drawClock(float hour, float minute) {
+  // tft.fillScreen(ILI9341_BLACK); // Optioneel: wissen scherm
+
+  // Klok parameters
+  float scale = 0.5;
+  int xCenter = 30;
+  int yCenter = 265;
+  int radius = 60 * scale;
+
+  // Teken klokrand
+  tft.drawCircle(xCenter, yCenter, radius, ILI9341_WHITE);
+  tft.drawCircle(xCenter, yCenter, radius - 2, ILI9341_WHITE);
+
+  // Uuraanduidingen
+  for (int i = 0; i < 12; i++) {
+    float angle = i * 30 * DEG_TO_RAD;
+    int x1 = xCenter + cos(angle) * (radius - 5);
+    int y1 = yCenter + sin(angle) * (radius - 5);
+    int x2 = xCenter + cos(angle) * (radius - 10);
+    int y2 = yCenter + sin(angle) * (radius - 10);
+    tft.drawLine(x1, y1, x2, y2, ILI9341_WHITE);
+  }
+
+  // Wijzers tekenen
+  // Uurwijzer
+  float hourAngle = ((hour + minute / 60.0) / 12.0) * 2 * PI - PI/2;
+  int hourX = xCenter + cos(hourAngle) * (radius * 0.5);
+  int hourY = yCenter + sin(hourAngle) * (radius * 0.5);
+  tft.drawLine(xCenter, yCenter, hourX, hourY, ILI9341_WHITE);
+
+  // Minuutwijzer
+  float minuteAngle = (minute / 60.0) * 2 * PI - PI/2;
+  int minX = xCenter + cos(minuteAngle) * (radius * 0.75);
+  int minY = yCenter + sin(minuteAngle) * (radius * 0.75);
+  tft.drawLine(xCenter, yCenter, minX, minY, ILI9341_WHITE);
+
+  // Middelpunt
+  tft.fillCircle(xCenter, yCenter, 3, ILI9341_WHITE);
 }
